@@ -1,0 +1,26 @@
+# Core application
+streamlit>=1.40,<2
+pandas>=2.2,<4
+numpy>=1.26,<3
+plotly>=5.20,<8
+pydantic>=2.7,<3
+python-dotenv>=1.0,<2
+
+# Statement extraction
+openpyxl>=3.1,<4
+pdfplumber>=0.11,<1
+
+# AI advisor (optional; the app runs deterministically without a key)
+openai>=1.30,<4
+
+# Groq LLM provider (Phase 1-5 AI features)
+groq>=0.11,<2
+langchain-groq>=0.2,<1
+langchain-core>=0.3,<1
+
+# Tool integration (MCP server + client over STDIO, FastMCP API)
+mcp>=1.2,<2
+
+# Testing
+pytest>=8.0,<10
+pytest-asyncio>=0.23,<2

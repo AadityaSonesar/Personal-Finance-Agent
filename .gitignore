@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.local
+.env copy
+*.pem
+*.key
+
+# Runtime data (transactions, audit trails, reports)
+data/
+!data/.gitkeep
+
+# JavaScript dependencies and build output
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+firebase-service-account.json

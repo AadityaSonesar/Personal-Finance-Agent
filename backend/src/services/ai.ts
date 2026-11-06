@@ -1,0 +1,2 @@
+import axios from "axios"; import jwt from "jsonwebtoken"; import { env } from "../config/env.js";
+export async function callAi(path:string,userId:string, email:string, payload:unknown){ const token=jwt.sign({sub:userId,email,scope:"internal-ai"},env.INTERNAL_SERVICE_SECRET,{expiresIn:"5m",issuer:"aurelia-api",audience:"aurelia-ai"}); return (await axios.post(`${env.AI_SERVICE_URL}${path}`,payload,{headers:{Authorization:`Bearer ${token}`},timeout:60000})).data; }

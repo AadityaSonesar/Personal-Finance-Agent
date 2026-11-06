@@ -1,0 +1,182 @@
+{
+  "app": {
+    "name": "Aurelia",
+    "product": "Personal Financial Wellness",
+    "currency": "INR",
+    "currency_symbol": "₹",
+    "locale": "en-IN",
+    "rule_version": "1.0.0",
+    "data_dir": "data",
+    "max_upload_mb": 20,
+    "max_transactions": 20000
+  },
+  "financial": {
+    "scoring": {
+      "weights": { "savings": 0.4, "budget": 0.3, "emergency": 0.3 },
+      "max_points": { "savings": 40, "budget": 30, "emergency": 30 },
+      "target_savings_rate": 0.2,
+      "emergency_months_target": 3,
+      "budget_warning_ratio": 0.9,
+      "score_bands": [
+        { "min": 85, "label": "Excellent", "summary": "Finances are resilient and well controlled." },
+        { "min": 70, "label": "Strong", "summary": "Solid foundations with limited room to absorb shocks." },
+        { "min": 55, "label": "Stable", "summary": "Broadly healthy, but key buffers need attention." },
+        { "min": 40, "label": "Fragile", "summary": "Several structural weaknesses are compounding." },
+        { "min": 0, "label": "At risk", "summary": "Immediate corrective action is required." }
+      ]
+    },
+    "default_budgets": {
+      "Food and Dining": 12000,
+      "Transportation": 6000,
+      "Shopping": 8000,
+      "Entertainment": 4000,
+      "Healthcare": 3000,
+      "Education": 3000,
+      "Rent and Housing": 25000,
+      "Utilities": 4000,
+      "Subscriptions": 2500,
+      "Investments": 15000,
+      "Savings": 10000,
+      "Other": 3000
+    },
+    "anomaly": {
+      "large_transaction_multiplier": 3.0,
+      "large_transaction_absolute": 15000,
+      "large_transaction_min_history": 4,
+      "spike_multiplier": 2.0,
+      "spike_min_months": 2,
+      "duplicate_window_days": 3,
+      "repeated_transaction_threshold": 3,
+      "repeated_transaction_window_days": 30,
+      "merchant_activity_multiplier": 2.5,
+      "unexpected_category_multiplier": 2.0,
+      "critical_amount": 40000
+    },
+    "subscriptions": {
+      "min_occurrences": 3,
+      "min_occurrences_potential": 2,
+      "interval_tolerance_ratio": 0.3,
+      "amount_tolerance_ratio": 0.12,
+      "lookback_days": 400,
+      "needs_verification_after_days": 45,
+      "minimum_confidence": 0.55,
+      "periods_days": [7, 14, 30, 90, 180, 365]
+    },
+    "forecast": {
+      "history_months": 3,
+      "run_rate_weight": 0.6,
+      "historical_weight": 0.4,
+      "deficit_alert_ratio": 0.0
+    },
+    "advisory": {
+      "max_recommendations": 10,
+      "minimum_budget_overrun_ratio": 0.05,
+      "subscription_review_amount": 500
+    },
+    "category_rules": {
+      "merchant_map": {
+        "swiggy": "Food and Dining",
+        "zomato": "Food and Dining",
+        "starbucks": "Food and Dining",
+        "blinkit": "Food and Dining",
+        "bigbasket": "Food and Dining",
+        "uber": "Transportation",
+        "ola": "Transportation",
+        "rapido": "Transportation",
+        "indian oil": "Transportation",
+        "irctc": "Transportation",
+        "amazon": "Shopping",
+        "flipkart": "Shopping",
+        "myntra": "Shopping",
+        "ajio": "Shopping",
+        "netflix": "Subscriptions",
+        "spotify": "Subscriptions",
+        "hotstar": "Subscriptions",
+        "prime video": "Subscriptions",
+        "youtube premium": "Subscriptions",
+        "icloud": "Subscriptions",
+        "notion": "Subscriptions",
+        "adobe": "Subscriptions",
+        "apollo pharmacy": "Healthcare",
+        "pharmeasy": "Healthcare",
+        "practo": "Healthcare",
+        "coursera": "Education",
+        "udemy": "Education",
+        "byju": "Education",
+        "no broker": "Rent and Housing",
+        "tata power": "Utilities",
+        "adani electricity": "Utilities",
+        "jio": "Utilities",
+        "airtel": "Utilities",
+        "groww": "Investments",
+        "zerodha": "Investments",
+        "coin": "Investments",
+        "indmoney": "Investments"
+      },
+      "keyword_rules": [
+        { "category": "Food and Dining", "keywords": ["restaurant", "cafe", "coffee", "pizza", "burger", "bakery", "dining", "food", "grocery", "supermarket"] },
+        { "category": "Transportation", "keywords": ["fuel", "petrol", "diesel", "metro", "cab", "taxi", "parking", "toll", "flight", "train"] },
+        { "category": "Shopping", "keywords": ["store", "mart", "mall", "fashion", "electronics", "apparel", "shopping"] },
+        { "category": "Entertainment", "keywords": ["cinema", "movie", "theatre", "game", "concert", "event"] },
+        { "category": "Healthcare", "keywords": ["hospital", "clinic", "pharmacy", "diagnostic", "medical", "doctor"] },
+        { "category": "Education", "keywords": ["tuition", "course", "academy", "school", "college", "books", "exam"] },
+        { "category": "Rent and Housing", "keywords": ["rent", "landlord", "maintenance", "society", "lease", "deposit"] },
+        { "category": "Utilities", "keywords": ["electricity", "water bill", "broadband", "wifi", "gas", "utility", "recharge"] },
+        { "category": "Subscriptions", "keywords": ["subscription", "membership", "premium", "annual plan", "monthly plan"] },
+        { "category": "Investments", "keywords": ["mutual fund", "sip", "stocks", "brokerage", "investment", "portfolio"] },
+        { "category": "Savings", "keywords": ["savings", "recurring deposit", "fixed deposit", "emergency fund"] }
+      ]
+    }
+  },
+  "alerts": {
+    "sla_minutes": { "P1": 15, "P2": 60, "P3": 240, "P4": 1440 },
+    "escalation_ratio": 0.8,
+    "triage": {
+      "p1_anomaly_score": 0.85,
+      "p1_fraud_types": ["duplicate_payment", "suspicious_merchant_instruction"],
+      "p2_budget_overrun_ratio": 0.1,
+      "p2_emergency_months": 1.0
+    },
+    "notification": {
+      "channel": "file",
+      "retries": 3,
+      "base_delay_ms": 200,
+      "max_delay_ms": 3000,
+      "timeout_seconds": 10
+    }
+  },
+  "ai": {
+    "enabled": true,
+    "provider": "openai_compatible",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "temperature": 0.2,
+    "max_output_tokens": 900,
+    "timeout_seconds": 30,
+    "max_retries": 2,
+    "max_untrusted_chars": 200,
+    "max_batch_size": 40
+  },
+  "mcp": {
+    "enabled": true,
+    "prefer_for_workflow": true,
+    "server_module": "mcp_server.server",
+    "server_file": "mcp_server/server.py",
+    "retries": 2,
+    "base_delay_ms": 250,
+    "max_delay_ms": 2000,
+    "call_timeout_seconds": 45,
+    "startup_timeout_seconds": 20
+  },
+  "security": {
+    "max_field_length": 280,
+    "max_description_length": 400,
+    "allowed_extensions": [".csv", ".xlsx", ".xls", ".pdf"],
+    "max_amount": 100000000,
+    "min_valid_date": "2000-01-01"
+  },
+  "logging": {
+    "level": "INFO",
+    "log_file": "data/app.log"
+  }
+}

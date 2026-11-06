@@ -1,0 +1,18 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+langgraph>=0.2,<1
+langchain>=0.3,<1
+langchain-mcp-adapters>=0.0.9,<1
+fastmcp>=2,<3
+pydantic>=2.7,<3
+pandas>=2.2,<4
+numpy>=1.26,<3
+PyJWT>=2.10,<3
+httpx>=0.28,<1
+python-dotenv>=1,<2
+
+# Groq LLM provider (Phase 1-5 AI features)
+groq>=0.11,<2
+langchain-groq>=0.2,<1
+langchain-core>=0.3,<1
+# Reuses the repository's existing core financial modules.
