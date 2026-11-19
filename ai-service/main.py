@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 
 from schemas.contracts import AiRequest, AiResponse
 from services.auth import verified_context
-from graph.workflow import run
+from graph.workflow import _enforce_inr_currency, run
 
 logger = logging.getLogger("aurelia.main")
 app = FastAPI(title="Aurelia internal AI service", docs_url=None, redoc_url=None)
@@ -220,6 +220,8 @@ def budget_recommendations(
         avg_income_val = round(sum(monthly_incomes.values()) / max(1, len(monthly_incomes)), 2) if monthly_incomes else 0.0
 
         financial_summary = {
+            "currency": "INR",
+            "currency_symbol": "₹",
             "category_spending": category_spending,
             "months_analyzed": num_months,
             "date_range": f"{months[0]} to {months[-1]}" if len(months) >= 2 else (months[0] if months else "unknown"),
@@ -237,7 +239,7 @@ def budget_recommendations(
                     "historical_average": avg,
                     "current_budget": existing_budgets.get(cat),
                     "recommended_budget": round(avg * 0.95, 2),
-                    "reason": f"Based on historical average of {avg:,.0f} across {num_months} month(s).",
+                    "reason": f"Based on historical average of ₹{avg:,.0f} across {num_months} month(s).",
                     "supporting_period": f"Last {num_months} month(s)",
                     "confidence": 0.6,
                     "requires_user_approval": True,
@@ -271,6 +273,7 @@ def budget_recommendations(
         if not result or not result.get("recommendations"):
             return _rule_based_fallback()
 
+        result = _enforce_inr_currency(result)
         for rec in result.get("recommendations", []):
             rec["requires_user_approval"] = True
 
@@ -286,10 +289,10 @@ def budget_recommendations(
 
 
 def _llm_extract_pdf_statement(raw_bytes: bytes, file_name: str) -> dict[str, Any]:
-    """Fallback LLM extraction for unconventional text-based PDF bank statements."""
+    """Fallback LLM extraction for unconventional text-based or OCR PDF bank statements."""
     import io
     import pdfplumber
-    from core.ingestion import IngestionError, _is_non_transaction_text, extract_statement_metadata
+    from core.ingestion import IngestionError, _is_non_transaction_text, _ocr_pdf_pages, extract_statement_metadata
     from core.security import sanitize_text
     from llm_groq import get_groq_client
 
@@ -302,10 +305,14 @@ def _llm_extract_pdf_statement(raw_bytes: bytes, file_name: str) -> dict[str, An
             if t.strip():
                 page_texts.append(t)
 
+    if not page_texts:
+        ocr_texts = _ocr_pdf_pages(raw_bytes)
+        page_texts = [t for t in ocr_texts if t.strip()]
+
     full_text = "\n".join(page_texts)
     if not full_text.strip():
         raise IngestionError(
-            "No readable text was found in this PDF. Scanned image-only PDFs require OCR or exporting as text-based PDF/CSV."
+            "No readable text was found in this PDF. Export as CSV/Excel or verify OCR support on this host."
         )
 
     metadata = extract_statement_metadata(full_text)

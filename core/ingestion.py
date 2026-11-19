@@ -7,8 +7,14 @@ reported instead of being silently accepted.
 
 from __future__ import annotations
 
+import base64
 import io
+import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -29,7 +35,8 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "transaction_id", "transaction id", "txn_id", "txn id", "txnid", "reference",
         "reference number", "ref no", "ref", "utr", "utr no", "cheque no", "chq no", "id",
         "chq/ref no", "chq/ref.no.", "chq./ref.no.", "chq / ref no",
-        "transaction reference", "txn reference", "reference details",
+        "ref.no./chq.no.", "ref.no./chq.no", "ref.n0./chq.n0.", "ref.n0./chq.no.",
+        "reference details",
     ),
     "transaction_date": (
         "transaction_date", "transaction date", "date", "txn date", "value date",
@@ -42,6 +49,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "description": (
         "description", "narration", "details", "memo", "remarks", "particulars",
         "transaction details", "transaction description", "note",
+        "transaction reference", "txn reference",
     ),
     "amount": (
         "amount", "txn amount", "transaction amount", "value", "amt",
@@ -77,6 +85,8 @@ CURRENCY_NOISE = re.compile(r"[₹$€£¥\s]")
 _NON_TX_PREFIXES = (
     "opening balance",
     "closing balance",
+    "your opening balance",
+    "your closing balance",
     "balance brought forward",
     "balance carried forward",
     "b/f",
@@ -85,6 +95,15 @@ _NON_TX_PREFIXES = (
     "carried forward",
     "statement summary",
     "account summary",
+    "relationship summary",
+    "transaction overview",
+    "transaction details",
+    "saving account",
+    "savings accounts",
+    "each depositor is insured",
+    "*all dates are in",
+    "all dates are in",
+    "contents of this statement",
     "page total",
     "sub total",
     "subtotal",
@@ -108,9 +127,13 @@ _CREDIT_DESC_KEYWORDS = (
 )
 
 _METADATA_HEADER_LINE_RE = re.compile(
-    r"^(?:account\s*(?:holder|name|no|number|type)|a/c\s*no|ifsc|micr|branch|cust(?:omer)?\s*id|"
+    r"^(?:account\s*(?:holder|name|no|number|type)|name\s+of\s+the\s+account|address\b|a/c\s*no|"
+    r"ifsc|micr|branch|cust(?:omer)?\s*id|mode\s+of\s+operation|available\s+balance|multi-option|"
     r"statement\s*(?:of\s+account|period|date)|period\s*:|generated\s+on|page\s+\d+|nominee|ckyc|"
-    r"registered\s+office|gstin|pan\s*:|currency\s*:)",
+    r"registered\s+office|gstin|pan\s*:|currency\s*:|"
+    r"your\s+(?:opening|closing)\s+balance|\*?all\s+dates\s+are\s+in|contents\s+of\s+this\s+statement|"
+    r"relationship\s+summary|transaction\s+(?:overview|details)|savings?\s+accounts?|"
+    r"\*?each\s+depositor\s+is\s+insured|please\s+do\s+not\s+share)",
     re.IGNORECASE,
 )
 
@@ -140,31 +163,39 @@ def extract_statement_metadata(text: str) -> dict[str, Any]:
         return metadata
 
     open_match = re.search(
-        r"(?:opening\s+bal(?:ance)?|balance\s+brought\s+forward)\s*[:\-]?\s*(?:inr|rs\.?|₹|\$)?\s*([\d,]+\.\d{2})",
+        r"(?:opening\s+bal(?:ance)?|balance\s+brought\s+forward)(?:\s+on\s+([0-9/\-.]+))?\s*[:\-]?\s*(?:inr|rs\.?|₹|\$)?\s*([\d,]+\.\d{2})",
         text,
         re.IGNORECASE,
     )
     if open_match:
         try:
-            metadata["opening_balance"] = float(open_match.group(1).replace(",", ""))
+            metadata["opening_balance"] = float(open_match.group(2).replace(",", ""))
         except ValueError:
             pass
 
     close_match = re.search(
-        r"(?:closing\s+bal(?:ance)?|balance\s+carried\s+forward)\s*[:\-]?\s*(?:inr|rs\.?|₹|\$)?\s*([\d,]+\.\d{2})",
+        r"(?:closing\s+bal(?:ance)?|balance\s+carried\s+forward)(?:\s+on\s+([0-9/\-.]+))?\s*[:\-]?\s*(?:inr|rs\.?|₹|\$)?\s*([\d,]+\.\d{2})",
         text,
         re.IGNORECASE,
     )
     if close_match:
         try:
-            metadata["closing_balance"] = float(close_match.group(1).replace(",", ""))
+            metadata["closing_balance"] = float(close_match.group(2).replace(",", ""))
         except ValueError:
             pass
 
-    acct_match = re.search(
-        r"(?:account|a/c)\s*(?:no\.?|number|#)\s*[:\-]?\s*[xX*0-9\-]*(\d{4})\b",
-        text,
-        re.IGNORECASE,
+    acct_match = (
+        re.search(
+            r"(?:account|a/c)\s*(?:no\.?|number|#)\s*[:\-]?\s*[xX*0-9\-]*(\d{4})\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"(?:saving(?:s)?|current)\s+account\s*[:\-\s]*[xX*0-9\-]{2,}(\d{4})\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(r"\b[xX*]{4,14}(\d{4})\b", text)
     )
     if acct_match:
         metadata["account_number"] = f"••••{acct_match.group(1)}"
@@ -176,6 +207,8 @@ def extract_statement_metadata(text: str) -> dict[str, Any]:
     )
     if period_match:
         metadata["statement_period"] = re.sub(r"\s+", " ", period_match.group(1).strip())
+    elif open_match and close_match and open_match.group(1) and close_match.group(1):
+        metadata["statement_period"] = f"{open_match.group(1)} to {close_match.group(1)}"
 
     return metadata
 
@@ -393,8 +426,10 @@ _AMOUNT_CELL_RE = re.compile(r"^-?[₹$€£¥\s]*[\d,]+\.\d{2}\s*(?:Dr|Cr|DR|CR
 _PDF_LINE_BALANCE_RE = re.compile(
     rf"^(?:\d{{1,4}}\s+)?(?P<date>{_DATE_TOKEN})\s+"
     rf"(?:{_DATE_TOKEN}\s+)?"
-    rf"(?P<desc>.+?)\s+"
-    rf"(?P<amount>-?[\d,]+\.\d{{2}})\s*(?P<type>Dr|Cr|DR|CR)?\s+"
+    rf"(?P<desc>.+?)"
+    rf"(?:\s+(?:-|0|_4_|-4-))*\s+"
+    rf"(?P<amount>-?[\d,]+\.\d{{2}})\s*(?P<type>Dr|Cr|DR|CR)?"
+    rf"(?:\s+(?:0|-+|_4_|-4-))*\s+"
     rf"(?P<balance>-?[\d,]+\.\d{{2}})\s*(?:Dr|Cr|DR|CR)?$"
 )
 _PDF_LINE_AMOUNT_RE = re.compile(
@@ -403,6 +438,124 @@ _PDF_LINE_AMOUNT_RE = re.compile(
     rf"(?P<desc>.+?)\s+"
     rf"(?P<amount>-?[\d,]+\.\d{{2}})\s*(?P<type>Dr|Cr|DR|CR)?$"
 )
+
+
+def _normalize_ocr_line(line: str) -> str:
+    """Clean common OCR character splits and l/I confusions in statement lines."""
+    s = line.strip()
+    s = re.sub(r"^([0-3])\s+(\d[/\-.]\d{2}[/\-.]\d{2,4})\b", r"\1\2", s)
+    s = re.sub(r"(\d)\s+\.(\d{2})\b", r"\1.\2", s)
+    s = re.sub(r"\bUP\s+[lI1]/", "UPI/", s)
+    s = re.sub(r"\b(?:UPlLlTE|1JPlLlTE)\b", "UPILITE", s)
+    s = re.sub(r"/(?:UPl|lJPl|UPllnt)\b", lambda m: "/UPI" if m.group(0) in {"/UPl", "/lJPl"} else "/UPIInt", s)
+    s = re.sub(r"\bUPl/", "UPI/", s)
+    s = re.sub(r"\bSBlN\b", "SBIN", s)
+    s = re.sub(r"\bUTlB\b", "UTIB", s)
+    s = re.sub(r"\bUBlN\b", "UBIN", s)
+    s = re.sub(r"\blClC\b", "ICIC", s)
+    s = re.sub(r"\blNDB\b", "INDB", s)
+    s = re.sub(r"\bFLlPKART\b", "FLIPKART", s)
+    s = re.sub(r"\bNETFLlX\b", "NETFLIX", s)
+    return s
+
+
+def _ocr_pdf_pages(data: bytes) -> list[str]:
+    """Render PDF pages to images and extract text lines via Windows native OCR (OcrEngine)."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import pypdfium2 as pdfium
+        from PIL import ImageOps
+    except ImportError:
+        return []
+
+    doc = pdfium.PdfDocument(data)
+    try:
+        page_count = len(doc)
+        if page_count == 0:
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img_paths: list[str] = []
+            for idx in range(page_count):
+                pil_img = doc[idx].render(scale=3.5).to_pil()
+                padded = ImageOps.expand(pil_img, border=40, fill="white")
+                img_path = os.path.join(tmpdir, f"page_{idx + 1}.png")
+                padded.save(img_path)
+                img_paths.append(img_path)
+
+            ps_path_array = ",".join(f"'{p.replace(chr(39), chr(39) * 2)}'" for p in img_paths)
+            ps_script = "\n".join([
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                "Add-Type -AssemblyName System.Runtime.WindowsRuntime",
+                "$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]",
+                "$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime]",
+                "$null = [Windows.Storage.StorageFile, Windows.Foundation, ContentType = WindowsRuntime]",
+                "$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]",
+                "function Await($WinRtTask, $ResultType) {",
+                "    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)",
+                "    $netTask = $asTask.Invoke($null, @($WinRtTask))",
+                "    $netTask.Wait(-1) | Out-Null",
+                "    $netTask.Result",
+                "}",
+                "$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()",
+                "if (-not $engine) { Write-Output '[]'; exit 0 }",
+                "$pages = @()",
+                f"foreach ($p in @({ps_path_array})) {{",
+                "    $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($p)) ([Windows.Storage.StorageFile])",
+                "    $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])",
+                "    $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])",
+                "    $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])",
+                "    $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])",
+                "    $stream.Dispose()",
+                "    $words = @(foreach ($line in $result.Lines) {",
+                "        foreach ($w in $line.Words) {",
+                "            [PSCustomObject]@{ t = $w.Text; x = [math]::Round($w.BoundingRect.X, 1); y = [math]::Round($w.BoundingRect.Y, 1) }",
+                "        }",
+                "    })",
+                "    $pages += ,$words",
+                "}",
+                "ConvertTo-Json $pages -Depth 4 -Compress",
+            ])
+            encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=90,
+                check=True,
+            )
+            raw_out = (proc.stdout or "").strip()
+            if not raw_out:
+                return []
+            all_pages = json.loads(raw_out)
+            if len(img_paths) == 1 and isinstance(all_pages, list) and (not all_pages or isinstance(all_pages[0], dict)):
+                all_pages = [all_pages]
+    finally:
+        doc.close()
+
+    page_texts: list[str] = []
+    for words in all_pages:
+        if not isinstance(words, list) or not words:
+            page_texts.append("")
+            continue
+        words.sort(key=lambda w: (float(w.get("y", 0.0)), float(w.get("x", 0.0))))
+        rows: list[dict[str, Any]] = []
+        for w in words:
+            wy = float(w.get("y", 0.0))
+            if not rows or abs(wy - rows[-1]["y"]) > 20.0:
+                rows.append({"y": wy, "words": [w]})
+            else:
+                rows[-1]["words"].append(w)
+        lines: list[str] = []
+        for r in rows:
+            r["words"].sort(key=lambda w: float(w.get("x", 0.0)))
+            joined = " ".join(str(w.get("t", "")) for w in r["words"] if str(w.get("t", "")))
+            lines.append(_normalize_ocr_line(joined))
+        page_texts.append("\n".join(lines))
+
+    return page_texts
 
 
 def _is_pdf_header_line(line: str) -> bool:
@@ -460,6 +613,27 @@ def _grids_from_pdf(data: bytes) -> tuple[list[list[list[str]]], list[str], bool
             text = page.extract_text() or ""
             tables = page.extract_tables() or []
             page_data.append((page_number, text, tables))
+
+        has_any_text = any(text.strip() for _, text, _ in page_data)
+        has_any_tx_table = False
+        tmp_width: int | None = None
+        for _, _, tables in page_data:
+            for table in tables:
+                grid = [[_cell(cell) for cell in row] for row in table if row and any(_cell(c) for c in row)]
+                if grid:
+                    ok, width = _is_transaction_grid(grid, tmp_width)
+                    if ok:
+                        has_any_tx_table = True
+                        tmp_width = width
+
+        if not has_any_text and not has_any_tx_table:
+            ocr_texts = _ocr_pdf_pages(data)
+            if ocr_texts and any(t.strip() for t in ocr_texts):
+                notes.append("Applied OCR to extract text from vector-outlined/image PDF.")
+                page_data = [
+                    (idx + 1, ocr_texts[idx] if idx < len(ocr_texts) else "", [])
+                    for idx in range(len(page_data))
+                ]
 
         full_text = "\n".join(text for _, text, _ in page_data)
         metadata = extract_statement_metadata(full_text)
@@ -532,6 +706,8 @@ def _rows_from_pdf_text(
         if match:
             tx_date = match.group("date").strip()
             desc = match.group("desc").strip()
+            # Clean stray column dash/zero noise at end of description
+            desc = re.sub(r"(?:\s+(?:-|0|_4_|-4-))+$", "", desc).strip()
             amt_str = match.group("amount").strip()
             explicit_type = (match.group("type") or "").strip()
 
@@ -549,7 +725,12 @@ def _rows_from_pdf_text(
                     prev_balance = balance_val if balance_val is not None else amt_abs
                 continue
 
-            if explicit_type:
+            desc_cf = desc.casefold()
+            if re.search(r"\bupi/cr\b|\binterest\s+credit\b", desc_cf):
+                tx_type = "Cr"
+            elif re.search(r"\bupi/dr\b", desc_cf):
+                tx_type = "Dr"
+            elif explicit_type:
                 tx_type = "Cr" if explicit_type.casefold() == "cr" else "Dr"
             elif balance_val is not None and prev_balance is not None:
                 diff = balance_val - prev_balance
@@ -558,10 +739,8 @@ def _rows_from_pdf_text(
                 elif diff < 0 and abs(-diff - amt_abs) <= 0.05:
                     tx_type = "Dr"
                 else:
-                    desc_cf = desc.casefold()
                     tx_type = "Cr" if any(kw in desc_cf for kw in _CREDIT_DESC_KEYWORDS) else "Dr"
             else:
-                desc_cf = desc.casefold()
                 tx_type = "Cr" if any(kw in desc_cf for kw in _CREDIT_DESC_KEYWORDS) else "Dr"
 
             if balance_val is not None:
@@ -580,6 +759,7 @@ def _rows_from_pdf_text(
             _METADATA_HEADER_LINE_RE.match(stripped)
             or _is_pdf_header_line(stripped)
             or re.fullmatch(r"[\*\-_=\s]+", stripped)
+            or re.match(r"^(?:no-no-|[A-Za-z]{1,2}-[A-Za-z]{1,2}-)", stripped, re.I)
         ):
             can_stitch = False
             continue

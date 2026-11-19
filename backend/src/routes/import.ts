@@ -134,20 +134,36 @@ function matchCandidate(header: string, candidates: string[]): boolean {
 
   for (const c of candidates) {
     const cNorm = normalizeHeader(c);
-    // Exact match
+    if (!cNorm) continue;
     if (norm === cNorm) return true;
-    // Substring containment
-    if (norm.includes(cNorm) || cNorm.includes(norm)) return true;
-    // Token overlap
     if (tokens.includes(cNorm)) return true;
+    if (cNorm.length >= 4 && norm.includes(cNorm)) return true;
   }
   return false;
 }
 
 function resolveColumn(headers: string[], candidates: string[]): string | undefined {
+  // Pass 1: exact normalized header match
   for (const h of headers) {
-    if (matchCandidate(h, candidates)) {
-      return h;
+    const norm = normalizeHeader(h);
+    if (!norm) continue;
+    for (const c of candidates) {
+      if (norm === normalizeHeader(c)) {
+        return h;
+      }
+    }
+  }
+  // Pass 2: token overlap or safe multi-character substring match
+  for (const h of headers) {
+    const norm = normalizeHeader(h);
+    if (!norm) continue;
+    const tokens = norm.split("_");
+    for (const c of candidates) {
+      const cNorm = normalizeHeader(c);
+      if (!cNorm) continue;
+      if (tokens.includes(cNorm) || (cNorm.length >= 4 && norm.includes(cNorm))) {
+        return h;
+      }
     }
   }
   return undefined;
@@ -296,11 +312,16 @@ async function mapRowsToTransactions(
     "reference_details",
   ]);
   const amountKey = resolveColumn(headers, COLUMN_ALIASES.amount);
-  const debitKey = resolveColumn(headers, COLUMN_ALIASES.debit);
-  const creditKey = resolveColumn(headers, COLUMN_ALIASES.credit);
+  let debitKey = resolveColumn(headers, COLUMN_ALIASES.debit);
+  let creditKey = resolveColumn(headers, COLUMN_ALIASES.credit);
   const typeKey = resolveColumn(headers, COLUMN_ALIASES.type);
   const categoryKey = resolveColumn(headers, COLUMN_ALIASES.category);
   const idKey = resolveColumn(headers, COLUMN_ALIASES.id);
+
+  // Prevent debitKey / creditKey from colliding with amount, description, or merchant columns
+  const blockedAmountOrText = new Set([amountKey, descKey, merchantKey].filter(Boolean));
+  if (debitKey && blockedAmountOrText.has(debitKey)) debitKey = undefined;
+  if (creditKey && blockedAmountOrText.has(creditKey)) creditKey = undefined;
 
   // If Transaction Reference is found, use it as merchantKey if no other merchant column exists
   if (!merchantKey && refKey) {
@@ -395,6 +416,13 @@ async function mapRowsToTransactions(
     if (isNonTransactionSummary(merchantRaw) || isNonTransactionSummary(descRaw)) {
       skipped++;
       continue;
+    }
+
+    const combinedText = `${merchantRaw} ${descRaw}`;
+    if (/\bupi\/cr\/|\binterest\s+credit\b|\bneft[\s\-]*cr\b|\bimps\/cr\b/i.test(combinedText)) {
+      type = "income";
+    } else if (/\bupi\/dr\//i.test(combinedText)) {
+      type = "expense";
     }
 
     // Put Transaction Reference in merchant as requested by user
@@ -555,15 +583,18 @@ router.post(
 
       const toInsert = valid.map((t) => {
         const suggestion = suggestionMap.get(t.transactionId);
-        // AI categorization is mandatory: use suggested category whenever provided
-        const aiCategory = suggestion?.suggested_category;
+        // Income transactions are assigned canonical Income category; expenses use AI categorization
+        const resolvedCategory =
+          t.type === "income"
+            ? "Income"
+            : suggestion?.suggested_category || "Other";
         return {
           ...t,
-          category: aiCategory || (t.type === "income" ? "Salary and Income" : "Other"),
+          category: resolvedCategory,
           categorySource: "ai",
           categoryConfidence: suggestion?.confidence || 0.85,
           aiSuggestion: suggestion || {
-            suggested_category: aiCategory || (t.type === "income" ? "Salary and Income" : "Other"),
+            suggested_category: resolvedCategory,
             confidence: 0.85,
             reason: "AI categorized based on transaction details",
             status: "suggested",

@@ -18,6 +18,7 @@ Clearly separate known facts from forecast estimates.
 
 # STYLE
 Quantitative, transparent, and uncertainty-aware. Always show your reasoning.
+All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 
 # TONE
 Factual and conservative. Never overstate confidence.
@@ -59,6 +60,7 @@ Return valid JSON only. Schema:
 - Confidence must reflect actual data quality (low data = low confidence)
 
 # CONSTRAINTS
+- All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 - estimated_closing_balance must be null unless a verified opening balance is provided
 - Never invent future income or payments
 - Never claim a subscription exists from one transaction
@@ -89,7 +91,8 @@ History covers: {history_months} months ({date_range})
 Recurring payments detected: {recurring_count}
 Average monthly income: {avg_income}
 Average monthly expenses: {avg_expenses}
+Currency: Indian Rupees (INR, symbol ₹)
 
-Generate cash-flow forecasts for next 30, 60, and 90 days.
+Generate cash-flow forecasts for next 30, 60, and 90 days. Format any currency amounts in text with ₹ (INR), never $ or USD.
 If history is insufficient for any period, explain what is missing.
 """

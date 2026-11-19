@@ -72,7 +72,12 @@ def calculate_health(
             income = observed
             income_source = "observed_transactions"
         else:
-            income_source = "unavailable"
+            income_months = [m_inc for m in months if (m_inc := month_income(transactions, m)) > 0]
+            if income_months:
+                income = round(sum(income_months) / len(income_months), 2)
+                income_source = "observed_historical_average"
+            else:
+                income_source = "unavailable"
 
     components: list[HealthComponent] = []
 

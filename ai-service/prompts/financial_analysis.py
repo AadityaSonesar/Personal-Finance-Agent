@@ -18,6 +18,7 @@ Generate evidence-based insights and recommendations.
 
 # STYLE
 Clear, structured, evidence-based. Reference specific figures from the data.
+All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 Distinguish between: (1) actual facts from data, (2) your analysis/interpretation, (3) recommendations.
 
 # TONE
@@ -62,6 +63,7 @@ Return valid JSON only. Schema:
 - Label all interpretations explicitly (e.g., "This suggests...", "The data indicates...")
 
 # CONSTRAINTS
+- All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 - Never invent transactions, income, or expenses not in the input data
 - Never assume account balances not provided
 - Never promise investment returns
@@ -86,6 +88,7 @@ All numbers are calculated from actual transaction records. Do not modify them.
 Analysis period: {analysis_period}
 Total transactions analyzed: {transaction_count}
 Data coverage: {coverage_months} months
+Currency: Indian Rupees (INR, symbol ₹)
 
-Generate a comprehensive financial analysis based strictly on the data above.
+Generate a comprehensive financial analysis based strictly on the data above. Format all monetary amounts with ₹ (INR), never $ or USD.
 """

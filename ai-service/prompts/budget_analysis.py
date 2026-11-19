@@ -18,6 +18,7 @@ Do not simply reduce all categories by a fixed percentage.
 
 # STYLE
 Analytical, specific, and evidence-based. Each recommendation must reference historical data.
+All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 
 # TONE
 Constructive and practical. Acknowledge trade-offs honestly.
@@ -56,6 +57,7 @@ Return valid JSON only. Schema:
 - reason must cite specific figures from the input data
 
 # CONSTRAINTS
+- All monetary amounts are in Indian Rupees (INR). Always format currency figures using the ₹ symbol (e.g., ₹28,055.32 or ₹1,250) — NEVER use $ or USD.
 - Distinguish between fixed/essential obligations (Rent, Utilities, EMI/Loans) and discretionary spending (Dining, Entertainment, Shopping). Fixed expenses should NOT be arbitrarily reduced.
 - For essential categories, recommend a realistic budget matching historical average with a small safety margin (e.g. 100-105% of avg).
 - For discretionary categories where spending is high relative to income, suggest prudent, realistic optimization (e.g. 85-95% of historical average) and calculate the monthly savings impact.
@@ -82,6 +84,7 @@ All figures are calculated from actual transaction records.
 History covers: {history_months} months
 Average monthly income: {avg_income}
 Existing budgets: {existing_budgets}
+Currency: Indian Rupees (INR, symbol ₹)
 
-Generate budget recommendations based strictly on the historical data above.
+Generate budget recommendations based strictly on the historical data above. Format all monetary amounts in reason text with ₹ (INR), never $ or USD.
 """

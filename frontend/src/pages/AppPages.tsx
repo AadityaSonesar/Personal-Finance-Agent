@@ -273,7 +273,7 @@ export function Transactions() {
       <div className="mb-6 flex flex-wrap gap-3">
         <h1 className="flex-1 text-2xl font-bold">Transactions</h1>
         <button className="button-sm" onClick={() => setImportOpen(!importOpen)}>
-          Import Statement (CSV / PDF)
+          Import Statement (CSV)
         </button>
         <button
           className="button-sm"
@@ -341,10 +341,9 @@ export function Transactions() {
       {/* Statement Import Panel */}
       {importOpen && (
         <div className="card mb-6">
-          <h2 className="mb-3 font-semibold">Import Bank Statement (CSV, Excel, or PDF)</h2>
+          <h2 className="mb-3 font-semibold">Import Bank Statement (CSV)</h2>
           <p className="mb-3 text-xs text-slate-400">
-            Upload a full bank statement PDF (including account info, opening/closing balance summaries, headers, and footers),
-            or a CSV / Excel file. Non-transaction summary lines are filtered automatically and transactions are categorized by AI.
+            Upload a full bank statement in CSV file. Non-transaction summary lines are filtered automatically and transactions are categorized by AI.
           </p>
           <form onSubmit={handleImport} className="flex flex-wrap gap-3">
             <input
@@ -1330,11 +1329,21 @@ export function FinancialAnalysis() {
               <div className="space-y-2">
                 {anomalies.slice(0, 5).map((a: any, i: number) => (
                   <div key={i} className="rounded-lg bg-slate-900 p-3 text-sm">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center gap-3">
                       <span className="font-medium">{a.merchant || a.transaction_id}</span>
-                      <Badge label={a.severity || "medium"} color={a.severity === "high" ? "red" : "yellow"} />
+                      <div className="flex items-center gap-3">
+                        {a.amount != null && a.amount > 0 && (
+                          <span className="font-semibold text-slate-200">{fmt(a.amount)}</span>
+                        )}
+                        <Badge
+                          label={a.severity || "medium"}
+                          color={a.severity === "critical" || a.severity === "high" ? "red" : "yellow"}
+                        />
+                      </div>
                     </div>
-                    <p className="mt-1 text-slate-400">{a.reason || a.anomaly_type}</p>
+                    <p className="mt-1 text-slate-400">
+                      {a.title || a.evidence?.[0] || a.reason || a.anomaly_type}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -1351,7 +1360,7 @@ export function FinancialAnalysis() {
                     <span>{s.merchant}</span>
                     <div className="flex items-center gap-3">
                       <Badge label={s.status || "potential"} color={s.status?.includes("confirmed") ? "green" : "yellow"} />
-                      <span>{fmt(s.amount)}/mo</span>
+                      <span>{fmt(s.average_amount ?? s.amount)}/mo</span>
                     </div>
                   </div>
                 ))}

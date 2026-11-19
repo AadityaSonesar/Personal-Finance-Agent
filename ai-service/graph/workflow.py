@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -25,7 +26,12 @@ from core.subscriptions import detect_subscriptions
 from core.budgets import analyze_budgets
 from core.health import calculate_health
 from core.cashflow import forecast_cashflow
-from core.spending import build_spending_intelligence, current_month_key, available_months
+from core.spending import (
+    available_months,
+    build_spending_intelligence,
+    current_month_key,
+    month_income,
+)
 from core.advisory import build_recommendations
 from core.alerts import build_alerts
 from core.storage import FinancialProfile
@@ -61,6 +67,22 @@ class FinanceState(TypedDict, total=False):
     # Advisor context
     user_question: str
     advisor_response: dict[str, Any]
+
+
+_DOLLAR_NUM_RE = re.compile(r"(?:US)?\$\s*(?=\d)")
+_USD_WORD_RE = re.compile(r"\bUSD\b")
+
+
+def _enforce_inr_currency(value: Any) -> Any:
+    """Recursively normalize any $ / USD prefixes in LLM text outputs to ₹ / INR."""
+    if isinstance(value, str):
+        text = _DOLLAR_NUM_RE.sub("₹", value)
+        return _USD_WORD_RE.sub("INR", text)
+    if isinstance(value, list):
+        return [_enforce_inr_currency(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _enforce_inr_currency(v) for k, v in value.items()}
+    return value
 
 
 def _done(state: FinanceState, field: str, value: Any) -> dict[str, Any]:
@@ -195,7 +217,29 @@ def analyse(state: FinanceState) -> dict[str, Any]:
     anomalies = detect_anomalies(transactions, config=cfg, reference_month=month)
     subscriptions = detect_subscriptions(transactions, config=cfg)
     spending = build_spending_intelligence(transactions, reference_month=month)
-    profile = FinancialProfile()
+    months = available_months(transactions)
+    observed_income = month_income(transactions, month) if month else 0.0
+    if observed_income <= 0:
+        income_months = [m_inc for m in months if (m_inc := month_income(transactions, m)) > 0]
+        observed_income = round(sum(income_months) / len(income_months), 2) if income_months else 0.0
+
+    total_income = sum(t.amount for t in transactions if t.transaction_type == "income")
+    total_expense = sum(t.amount for t in transactions if t.transaction_type == "expense")
+    savings_tx_total = sum(
+        t.amount for t in transactions
+        if t.transaction_type == "expense" and t.category in {"Savings", "Investments"}
+    )
+    inferred_balance = round(max(0.0, total_income - total_expense), 2) if transactions else None
+    inferred_emergency = (
+        round(max(0.0, savings_tx_total + max(0.0, total_income - total_expense)), 2)
+        if transactions
+        else None
+    )
+    profile = FinancialProfile(
+        monthly_income=observed_income if observed_income > 0 else None,
+        emergency_fund=inferred_emergency,
+        current_balance=inferred_balance,
+    )
     health = calculate_health(
         transactions,
         profile=profile,
@@ -306,6 +350,8 @@ def llm_interpret_analysis(state: FinanceState) -> dict[str, Any]:
 
         # Build a verified financial summary to send to the LLM
         financial_data: dict[str, Any] = {
+            "currency": "INR",
+            "currency_symbol": "₹",
             "monthly_summary": spending.get("monthly", []),
             "category_summary": category_spending_summary,
             "category_breakdown": spending.get("category_breakdown", []),
@@ -356,6 +402,7 @@ def llm_interpret_analysis(state: FinanceState) -> dict[str, Any]:
 
         result = client.call(SYSTEM_PROMPT, user_message, task="analysis", max_tokens=1500)
         if result:
+            result = _enforce_inr_currency(result)
             result["prompt_version"] = "1.0.0"
             result["model_used"] = "groq"
             result["transaction_count"] = len(transactions)
@@ -425,6 +472,8 @@ def advisor_node(state: FinanceState) -> dict[str, Any]:
 
         # Build financial context (verified data only)
         financial_context: dict[str, Any] = {
+            "currency": "INR",
+            "currency_symbol": "₹",
             "category_spending": category_spending_map,
             "monthly_spending": spending.get("monthly", []),
             "income_vs_expense": spending.get("income_vs_expense", {}),
@@ -437,7 +486,11 @@ def advisor_node(state: FinanceState) -> dict[str, Any]:
             "subscriptions": [
                 {
                     "merchant": s.merchant if hasattr(s, "merchant") else str(s),
-                    "amount": s.amount if hasattr(s, "amount") else None,
+                    "amount": (
+                        s.average_amount
+                        if hasattr(s, "average_amount")
+                        else getattr(s, "amount", None)
+                    ),
                     "frequency": s.frequency if hasattr(s, "frequency") else "monthly",
                     "status": s.status if hasattr(s, "status") else "unknown",
                 }
@@ -477,6 +530,7 @@ def advisor_node(state: FinanceState) -> dict[str, Any]:
             max_tokens=1500,
         )
         if result:
+            result = _enforce_inr_currency(result)
             result["prompt_version"] = "1.0.0"
             result["model_used"] = "groq"
             return _done(state, "advisor_response", result)
