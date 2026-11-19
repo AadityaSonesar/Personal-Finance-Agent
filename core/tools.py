@@ -6,6 +6,7 @@ JSON envelope. High-risk tools require explicit authorization before they run.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -131,6 +132,11 @@ class SaveResultsRequest(DatasetRequest):
 class SaveForecastRequest(DatasetRequest):
     authorized: bool = True
     forecast: dict[str, Any] = Field(default_factory=dict)
+
+
+class WhatsAppMessageRequest(_Request):
+    phone_number: str = Field(min_length=7, max_length=25)
+    message: str = Field(min_length=1, max_length=4096)
 
 
 @dataclass(frozen=True)
@@ -595,6 +601,52 @@ def _handle_save_forecast_results(request: SaveForecastRequest, config: AppConfi
     }
 
 
+def _handle_send_whatsapp_message(request: WhatsAppMessageRequest, config: AppConfig) -> dict[str, Any]:
+    api_url = os.getenv("WHATSAPP_API_URL", "https://graph.facebook.com/v19.0")
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
+    clean_phone = "".join(c for c in request.phone_number if c.isdigit())
+
+    if not phone_number_id or not access_token:
+        logger.info("[WhatsApp MCP] Credentials not set. Simulated send to %s: %s", clean_phone, request.message[:80])
+        return {
+            "sent": True,
+            "simulated": True,
+            "recipient": clean_phone,
+            "message": request.message,
+            "note": "WhatsApp credentials not configured; message simulated.",
+        }
+
+    try:
+        import httpx
+        url = f"{api_url}/{phone_number_id}/messages"
+        resp = httpx.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": clean_phone,
+                "type": "text",
+                "text": {"preview_url": False, "body": request.message},
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "sent": True,
+            "simulated": False,
+            "recipient": clean_phone,
+            "message_id": data.get("messages", [{}])[0].get("id", ""),
+        }
+    except Exception as exc:
+        raise ToolError(f"WhatsApp API error: {exc}") from exc
+
+
 TOOL_SPECS: dict[str, ToolSpec] = {
     "get_user_transactions": ToolSpec(
         name="get_user_transactions",
@@ -728,6 +780,13 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         risk="low",
         model=AuditRequest,
         handler=_handle_retrieve_audit_logs,
+    ),
+    "send_whatsapp_message": ToolSpec(
+        name="send_whatsapp_message",
+        description="Send an interactive chat message to a user on WhatsApp via Meta Cloud API.",
+        risk="low",
+        model=WhatsAppMessageRequest,
+        handler=_handle_send_whatsapp_message,
     ),
 }
 

@@ -1,0 +1,15 @@
+{
+  "name": "aurelia-finance-platform",
+  "private": true,
+  "scripts": {
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:ai": "python -m uvicorn main:app --app-dir ai-service --host 127.0.0.1 --port 8000",
+    "dev:backend:if-free": "powershell -NoProfile -Command \"if (Get-NetTCPConnection -LocalPort 4000 -State Listen -ErrorAction SilentlyContinue) { Write-Host 'Backend already running on port 4000; reusing it.' } else { npm run dev:backend }\"",
+    "dev:ai:if-free": "powershell -NoProfile -Command \"if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) { Write-Host 'AI service already running on port 8000; reusing it.' } else { npm run dev:ai }\"",
+    "dev:full": "concurrently --kill-others-on-fail --names frontend,backend,ai --prefix-colors cyan,green,magenta \"npm run dev:frontend\" \"npm run dev:backend:if-free\" \"npm run dev:ai:if-free\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

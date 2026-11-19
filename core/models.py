@@ -104,6 +104,7 @@ class IngestionOutcome(BaseModel):
     requires_manual_review: bool = False
     notes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationStats(BaseModel):

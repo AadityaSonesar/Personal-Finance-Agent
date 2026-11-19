@@ -7,3 +7,13 @@ api.interceptors.request.use(async (config) => {
   if (user) config.headers.Authorization = `Bearer ${await user.getIdToken()}`;
   return config;
 });
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (!error.response) {
+      const base = api.defaults.baseURL;
+      return Promise.reject(new Error(`Cannot reach the Aurelia API at ${base}. Confirm the backend is running and accepts requests from ${window.location.origin}.`));
+    }
+    return Promise.reject(error);
+  },
+);

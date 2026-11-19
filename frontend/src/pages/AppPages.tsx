@@ -273,7 +273,7 @@ export function Transactions() {
       <div className="mb-6 flex flex-wrap gap-3">
         <h1 className="flex-1 text-2xl font-bold">Transactions</h1>
         <button className="button-sm" onClick={() => setImportOpen(!importOpen)}>
-          Import CSV
+          Import Statement (CSV / PDF)
         </button>
         <button
           className="button-sm"
@@ -338,19 +338,19 @@ export function Transactions() {
         </div>
       )}
 
-      {/* CSV Import Panel */}
+      {/* Statement Import Panel */}
       {importOpen && (
         <div className="card mb-6">
-          <h2 className="mb-3 font-semibold">Import CSV Statement</h2>
+          <h2 className="mb-3 font-semibold">Import Bank Statement (CSV, Excel, or PDF)</h2>
           <p className="mb-3 text-xs text-slate-400">
-            Upload a CSV file with columns: date, merchant/payee, amount (or debit/credit), and optionally description, type, category.
-            The AI will suggest categories for imported transactions.
+            Upload a full bank statement PDF (including account info, opening/closing balance summaries, headers, and footers),
+            or a CSV / Excel file. Non-transaction summary lines are filtered automatically and transactions are categorized by AI.
           </p>
           <form onSubmit={handleImport} className="flex flex-wrap gap-3">
             <input
               ref={fileRef}
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.xlsx,.xls,.pdf"
               className="input text-sm"
               required
             />
@@ -371,6 +371,71 @@ export function Transactions() {
                     <span>Duplicates: <strong>{importResult.duplicates}</strong></span>
                     <span>AI categorized: <strong>{importResult.ai_categorized}</strong></span>
                   </div>
+                  {importResult.statement_metadata && Object.keys(importResult.statement_metadata).length > 0 && (
+                    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-cyan-300">Statement Details Extracted</span>
+                        {importResult.statement_metadata.opening_balance != null && (
+                          <button
+                            type="button"
+                            className="button-sm text-xs"
+                            disabled={savingBalance}
+                            onClick={async () => {
+                              const ob = Number(importResult.statement_metadata.opening_balance);
+                              setInitialBalance(ob);
+                              setSavingBalance(true);
+                              try {
+                                await api.post("/user/initial-balance", { initialBalance: ob });
+                                alert(`Starting balance updated to ₹${ob.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`);
+                              } catch {
+                                alert("Failed to update starting balance.");
+                              } finally {
+                                setSavingBalance(false);
+                              }
+                            }}
+                          >
+                            {savingBalance
+                              ? "Saving…"
+                              : `Use as Starting Balance (₹${Number(importResult.statement_metadata.opening_balance).toLocaleString("en-IN")})`}
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-slate-300 sm:grid-cols-3">
+                        {importResult.statement_metadata.opening_balance != null && (
+                          <span>
+                            Opening Balance:{" "}
+                            <strong>₹{Number(importResult.statement_metadata.opening_balance).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                          </span>
+                        )}
+                        {importResult.statement_metadata.closing_balance != null && (
+                          <span>
+                            Closing Balance:{" "}
+                            <strong>₹{Number(importResult.statement_metadata.closing_balance).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                          </span>
+                        )}
+                        {importResult.statement_metadata.statement_period && (
+                          <span>
+                            Period: <strong>{importResult.statement_metadata.statement_period}</strong>
+                          </span>
+                        )}
+                        {importResult.statement_metadata.account_number && (
+                          <span>
+                            Account: <strong>{importResult.statement_metadata.account_number}</strong>
+                          </span>
+                        )}
+                        {importResult.statement_metadata.pages_parsed != null && (
+                          <span>
+                            Pages Parsed: <strong>{importResult.statement_metadata.pages_parsed}</strong>
+                          </span>
+                        )}
+                        {importResult.statement_metadata.non_transaction_rows_filtered != null && (
+                          <span>
+                            Non-Tx Lines Filtered: <strong>{importResult.statement_metadata.non_transaction_rows_filtered}</strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {importResult.ai_error && (
                     <p className="mt-2 text-amber-400 text-xs">{importResult.ai_error}</p>
                   )}

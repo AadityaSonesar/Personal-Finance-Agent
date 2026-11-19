@@ -317,6 +317,20 @@ def retrieve_audit_logs(
     return _run("retrieve_audit_logs", params)
 
 
+@mcp.tool(
+    name="send_whatsapp_message",
+    description="Send an interactive chat message to a user on WhatsApp via Meta Cloud API.",
+)
+def send_whatsapp_message(phone_number: str, message: str) -> dict[str, Any]:
+    """Send an interactive chat message to a user on WhatsApp.
+
+    Args:
+        phone_number: Recipient's phone number with country code (e.g. 919876543210).
+        message: Chat message text to send.
+    """
+    return _run("send_whatsapp_message", {"phone_number": phone_number, "message": message})
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

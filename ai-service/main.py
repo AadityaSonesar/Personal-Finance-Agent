@@ -2,6 +2,7 @@
 
 Endpoints:
 - POST /internal/ai/categorize            — LLM transaction categorization
+- POST /internal/ai/parse-statement        — Parse PDF / Excel / CSV statements
 - POST /internal/ai/analyze               — Full financial analysis (deterministic + LLM)
 - POST /internal/ai/forecast              — Cash-flow forecast
 - POST /internal/ai/report                — Full report package
@@ -51,6 +52,11 @@ class CategorizationResponse(BaseModel):
 class BudgetRecommendationRequest(BaseModel):
     transactions: list[dict[str, Any]] = Field(default_factory=list)
     budgets: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ParseStatementRequest(BaseModel):
+    file_name: str = Field(min_length=1, max_length=255)
+    file_base64: str = Field(min_length=1)
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -277,3 +283,159 @@ def budget_recommendations(
     except Exception as exc:
         logger.error("Budget recommendations error: %s", exc)
         raise HTTPException(status_code=500, detail=f"Budget recommendations failed: {str(exc)[:200]}")
+
+
+def _llm_extract_pdf_statement(raw_bytes: bytes, file_name: str) -> dict[str, Any]:
+    """Fallback LLM extraction for unconventional text-based PDF bank statements."""
+    import io
+    import pdfplumber
+    from core.ingestion import IngestionError, _is_non_transaction_text, extract_statement_metadata
+    from core.security import sanitize_text
+    from llm_groq import get_groq_client
+
+    page_texts: list[str] = []
+    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+        if not pdf.pages:
+            raise IngestionError("The PDF has no pages.")
+        for page in pdf.pages:
+            t = page.extract_text() or ""
+            if t.strip():
+                page_texts.append(t)
+
+    full_text = "\n".join(page_texts)
+    if not full_text.strip():
+        raise IngestionError(
+            "No readable text was found in this PDF. Scanned image-only PDFs require OCR or exporting as text-based PDF/CSV."
+        )
+
+    metadata = extract_statement_metadata(full_text)
+    metadata["pages_parsed"] = len(page_texts)
+
+    client = get_groq_client()
+    if not client.is_available():
+        raise IngestionError(
+            "No structured transaction table was detected and the AI fallback is not configured."
+        )
+
+    system_prompt = (
+        "You extract financial transactions and account metadata from bank statement text. "
+        "Return strict JSON only with shape: "
+        '{"rows": [{"transaction_date": "DD/MM/YYYY or YYYY-MM-DD", "merchant": "name", '
+        '"description": "details", "amount": "123.45", "transaction_type": "expense" or "income", '
+        '"transaction_id": "optional ref"}], '
+        '"metadata": {"opening_balance": number_or_null, "closing_balance": number_or_null, '
+        '"account_number": "string_or_null", "statement_period": "string_or_null"}}. '
+        "Ignore headers, footers, account summaries, opening/closing balance lines, page totals, and disclaimers."
+    )
+
+    extracted_rows: list[dict[str, Any]] = []
+    filtered_count = 0
+    row_ref = 1
+
+    # Process statement pages in bounded text chunks
+    for idx, page_txt in enumerate(page_texts, start=1):
+        snippet = page_txt[:10000]
+        user_prompt = f"<statement_page page=\"{idx}\">\n{snippet}\n</statement_page>"
+        llm_res = client.call(system_prompt, user_prompt, task="analysis", max_tokens=2000)
+        if not isinstance(llm_res, dict):
+            continue
+
+        llm_meta = llm_res.get("metadata")
+        if isinstance(llm_meta, dict):
+            for k in ("opening_balance", "closing_balance", "account_number", "statement_period"):
+                if metadata.get(k) is None and llm_meta.get(k) not in (None, "", "null"):
+                    metadata[k] = llm_meta[k]
+
+        for raw in llm_res.get("rows") or []:
+            if not isinstance(raw, dict):
+                continue
+            merch = str(raw.get("merchant") or "").strip()
+            desc = str(raw.get("description") or "").strip()
+            if _is_non_transaction_text(merch) or _is_non_transaction_text(desc):
+                filtered_count += 1
+                continue
+            if not merch and desc:
+                merch = desc[:80]
+            tx_type = str(raw.get("transaction_type") or "expense").strip().lower()
+            if tx_type not in {"income", "expense"}:
+                tx_type = "income" if any(w in tx_type for w in ("cr", "credit", "income", "deposit")) else "expense"
+
+            extracted_rows.append({
+                "transaction_date": str(raw.get("transaction_date") or "").strip(),
+                "merchant": sanitize_text(merch, max_length=280).text,
+                "description": sanitize_text(desc, max_length=400).text,
+                "amount": str(raw.get("amount") or "").strip(),
+                "transaction_type": tx_type,
+                "transaction_id": str(raw.get("transaction_id") or "").strip(),
+                "_row_ref": row_ref,
+            })
+            row_ref += 1
+
+    if not extracted_rows:
+        raise IngestionError(
+            "No transaction rows could be extracted from this PDF. Export the statement as CSV or Excel, or upload a text-based PDF."
+        )
+
+    metadata["non_transaction_rows_filtered"] = filtered_count
+    notes = [
+        f"Extracted {len(extracted_rows)} transactions using AI statement parser across {len(page_texts)} page(s).",
+        "Extraction relied on unstructured PDF text; please verify parsed rows.",
+    ]
+    return {
+        "file_name": file_name,
+        "file_type": "pdf",
+        "rows": extracted_rows,
+        "row_count": len(extracted_rows),
+        "metadata": metadata,
+        "notes": notes,
+        "warnings": [],
+        "requires_manual_review": True,
+    }
+
+
+@app.post("/internal/ai/parse-statement")
+def parse_statement_endpoint(
+    request: ParseStatementRequest,
+    context: dict = Depends(verified_context),
+):
+    """Parse an uploaded PDF, Excel, or CSV statement into transaction rows and statement metadata."""
+    import base64
+    import binascii
+    import sys
+
+    root_dir = str(Path(__file__).resolve().parents[1])
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
+
+    from core.ingestion import IngestionError, parse_statement
+
+    try:
+        raw_bytes = base64.b64decode(request.file_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 file payload: {exc}")
+
+    try:
+        outcome = parse_statement(raw_bytes, request.file_name)
+        return {
+            "file_name": outcome.file_name,
+            "file_type": outcome.file_type,
+            "rows": outcome.rows,
+            "row_count": outcome.row_count,
+            "metadata": outcome.metadata,
+            "notes": outcome.notes,
+            "warnings": outcome.warnings,
+            "requires_manual_review": outcome.requires_manual_review,
+        }
+    except IngestionError as exc:
+        if request.file_name.lower().endswith(".pdf"):
+            try:
+                return _llm_extract_pdf_statement(raw_bytes, request.file_name)
+            except IngestionError as llm_exc:
+                raise HTTPException(status_code=400, detail=str(llm_exc))
+            except Exception as llm_err:
+                logger.warning("LLM PDF extraction fallback failed: %s", llm_err)
+                raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Statement parse error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to parse statement: {str(exc)[:200]}")

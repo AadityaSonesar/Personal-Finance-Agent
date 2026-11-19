@@ -70,6 +70,7 @@ Unavailable inputs stay unavailable; they are not silently treated as zero. Fore
 2. Install JavaScript dependencies:
 
    ```bash
+   npm install
    npm install --prefix backend
    npm install --prefix frontend
    ```
@@ -80,23 +81,13 @@ Unavailable inputs stay unavailable; they are not silently treated as zero. Fore
    python -m pip install -r ai-service/requirements.txt
    ```
 
-4. Start the internal Python service from the project root:
+4. Start all local services from the project root:
 
    ```bash
-   PYTHONPATH="$(pwd):$(pwd)/ai-service" uvicorn main:app --app-dir ai-service --host 127.0.0.1 --port 8000
+   npm run dev:full
    ```
 
-5. Start the API:
-
-   ```bash
-   npm run dev --prefix backend
-   ```
-
-6. Start the web application:
-
-   ```bash
-   npm run dev --prefix frontend
-   ```
+   This starts the Vite frontend, Express API, and internal FastAPI service together. The command requires `uvicorn` to be available in the Python environment after installing `ai-service/requirements.txt`.
 
 For deployment, terminate TLS at the hosting layer, set `NODE_ENV=production`, use HTTPS-only cookies, configure exact CORS origins, and keep the Python internal endpoint inaccessible from the public internet.
 

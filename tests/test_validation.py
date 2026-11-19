@@ -136,3 +136,105 @@ def test_invalid_dates_block_the_row(config, value):
     outcome = validate_rows(rows, config=config)
     assert outcome.stats.validated == 0
     assert outcome.stats.rejected == 1
+
+
+def _build_minimal_pdf(lines: list[str]) -> bytes:
+    """Build a minimal valid text-based PDF in pure Python for ingestion tests."""
+    import io
+
+    text_ops = ["BT", "/F1 10 Tf", "50 750 Td", "14 TL"]
+    for line in lines:
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        text_ops.append(f"({escaped}) Tj T*")
+    text_ops.append("ET")
+    stream = "\n".join(text_ops).encode("latin-1")
+
+    objects = [
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n",
+        f"4 0 obj << /Length {len(stream)} >> stream\n".encode("latin-1") + stream + b"\nendstream endobj\n",
+        b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+
+    buf = io.BytesIO()
+    buf.write(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for obj in objects:
+        offsets.append(buf.tell())
+        buf.write(obj)
+    xref_pos = buf.tell()
+    buf.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("latin-1"))
+    for off in offsets:
+        buf.write(f"{off:010d} 00000 n \n".encode("latin-1"))
+    buf.write(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode("latin-1")
+    )
+    return buf.getvalue()
+
+
+def test_parse_pdf_statement_filters_non_transaction_content_and_extracts_metadata(config):
+    from core.ingestion import parse_statement
+
+    pdf_bytes = _build_minimal_pdf([
+        "HDFC BANK LIMITED - STATEMENT OF ACCOUNT",
+        "Account Holder: Test Customer",
+        "Account No: 50100234987654   IFSC: HDFC0000123",
+        "Statement Period: 01/08/2026 to 31/08/2026",
+        "Opening Balance: INR 45,000.00   Closing Balance: INR 117,550.00",
+        "Date Narration Chq/Ref No Withdrawal Deposit Balance",
+        "01/08/2026 Opening Balance 45,000.00",
+        "05/08/2026 UPI-SWIGGY-ORDER123 450.00 44,550.00",
+        "swiggy@okaxis Ref 987654 Lunch",
+        "10/08/2026 NEFT-ACME CORP SALARY 75,000.00 119,550.00",
+        "15/08/2026 UPI-AMAZON INDIA 2,000.00 Dr 117,550.00",
+        "31/08/2026 Closing Balance 117,550.00",
+        "*** End of Statement ***",
+    ])
+
+    outcome = parse_statement(pdf_bytes, "hdfc_statement_aug.pdf", config=config)
+
+    assert outcome.file_type == "pdf"
+    assert outcome.row_count == 3
+    assert outcome.metadata["opening_balance"] == 45000.0
+    assert outcome.metadata["closing_balance"] == 117550.0
+    assert outcome.metadata["account_number"] == "••••7654"
+    assert outcome.metadata["statement_period"] == "01/08/2026 to 31/08/2026"
+    assert outcome.metadata["pages_parsed"] == 1
+    assert outcome.metadata["non_transaction_rows_filtered"] >= 3
+
+    first, second, third = outcome.rows
+    assert first["transaction_date"] == "05/08/2026"
+    assert "swiggy@okaxis Ref 987654 Lunch" in first["description"]
+    assert first["amount"] == "450.00"
+    assert first["transaction_type"] == "Dr"
+
+    assert second["transaction_date"] == "10/08/2026"
+    assert second["amount"] == "75,000.00"
+    assert second["transaction_type"] == "Cr"
+
+    assert third["transaction_date"] == "15/08/2026"
+    assert third["amount"] == "2,000.00"
+    assert third["transaction_type"] == "Dr"
+
+
+def test_grid_to_rows_stitches_multiline_and_skips_summaries():
+    from core.ingestion import _grid_to_rows
+
+    grid = [
+        ["Account Holder:", "Aaditya", "", ""],
+        ["Date", "Narration", "Withdrawal Amt.", "Deposit Amt."],
+        ["01/08/2026", "Opening Balance", "", "45,000.00"],
+        ["05/08/2026", "UPI/SWIGGY", "450.00", ""],
+        ["", "order@axisbank Food", "", ""],
+        ["Date", "Narration", "Withdrawal Amt.", "Deposit Amt."],
+        ["10/08/2026", "NEFT SALARY", "", "75,000.00"],
+        ["31/08/2026", "Closing Balance", "", "119,550.00"],
+    ]
+
+    rows, header_idx, _warnings, _mapping, filtered = _grid_to_rows(grid)
+    assert header_idx == 1
+    assert len(rows) == 2
+    assert filtered == 3
+    assert rows[0]["description"] == "UPI/SWIGGY order@axisbank Food"
+    assert rows[1]["description"] == "NEFT SALARY"

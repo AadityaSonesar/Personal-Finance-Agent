@@ -9,7 +9,7 @@ import { audit } from "../utils/audit.js";
 const router = Router();
 router.use(requireAuth);
 
-// Accept CSV/Excel in memory — max 10 MB
+// Accept CSV/Excel/PDF statements in memory — max 10 MB
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -19,9 +19,10 @@ const upload = multer({
       "application/vnd.ms-excel",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/csv",
+      "application/pdf",
       "text/plain",
     ];
-    const nameOk = /\.(csv|xlsx?|xls|txt)$/i.test(file.originalname);
+    const nameOk = /\.(csv|xlsx?|xls|pdf|txt)$/i.test(file.originalname);
     cb(null, allowed.includes(file.mimetype) || nameOk);
   },
 });
@@ -225,22 +226,54 @@ function cleanAmount(val: string): number | null {
   return isNaN(n) ? null : Math.abs(n);
 }
 
-function inferDate(val: string): Date | null {
-  if (!val) return null;
-  const iso = new Date(val);
-  if (!isNaN(iso.getTime())) return iso;
-  const parts = val.split(/[\/\-.]/);
-  if (parts.length === 3) {
-    const [a, b, c] = parts;
-    if (c.length === 4) {
-      const d = new Date(`${c}-${b.padStart(2, "0")}-${a.padStart(2, "0")}`);
-      if (!isNaN(d.getTime())) return d;
-    } else if (a.length === 4) {
-      const d = new Date(`${a}-${b.padStart(2, "0")}-${c.padStart(2, "0")}`);
-      if (!isNaN(d.getTime())) return d;
-    }
+function makeValidUtcDate(year: number, month: number, day: number): Date | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1990 || year > 2100) return null;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() !== month - 1 ||
+    d.getUTCDate() !== day
+  ) {
+    return null;
   }
-  return null;
+  return d;
+}
+
+function inferDate(val: string): Date | null {
+  const trimmed = String(val || "").trim();
+  if (!trimmed) return null;
+
+  // 1. YYYY-MM-DD / YYYY/MM/DD (with optional ISO time)
+  const ymd = trimmed.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[T\s].*)?$/);
+  if (ymd) {
+    return makeValidUtcDate(parseInt(ymd[1], 10), parseInt(ymd[2], 10), parseInt(ymd[3], 10));
+  }
+
+  // 2. DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY (checked before JS Date() so 05/08/2026 = 5 Aug, not 8 May)
+  const dmy = trimmed.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (dmy) {
+    let day = parseInt(dmy[1], 10);
+    let month = parseInt(dmy[2], 10);
+    const rawYear = parseInt(dmy[3], 10);
+    const year = dmy[3].length === 2 ? 2000 + rawYear : rawYear;
+    if (month > 12 && day >= 1 && day <= 12) {
+      [day, month] = [month, day];
+    }
+    return makeValidUtcDate(year, month, day);
+  }
+
+  // 3. Month-name or ISO strings (e.g. "15-Aug-2026", "15 Aug 2026")
+  const fallback = new Date(trimmed);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
+const NON_TX_SUMMARY_RE =
+  /^(?:opening\s+bal(?:ance)?|closing\s+bal(?:ance)?|balance\s+brought\s+forward|balance\s+carried\s+forward|brought\s+forward|carried\s+forward|b\/f|c\/f|statement\s+summary|account\s+summary|page\s+total|sub\s*total|grand\s+total|transaction\s+total|end\s+of\s+statement|\*{2,}\s*end\s+of\s+statement|total(?:\s*[:\-]|$))/i;
+
+function isNonTransactionSummary(val: string): boolean {
+  const norm = val.replace(/\s+/g, " ").trim();
+  if (!norm) return false;
+  return NON_TX_SUMMARY_RE.test(norm);
 }
 
 /** Convert raw CSV rows to transaction objects + detect duplicates. */
@@ -359,6 +392,11 @@ async function mapRowsToTransactions(
     let merchantRaw = merchantKey ? (row[merchantKey] || "").trim() : "";
     const descRaw = descKey ? (row[descKey] || "").trim() : "";
 
+    if (isNonTransactionSummary(merchantRaw) || isNonTransactionSummary(descRaw)) {
+      skipped++;
+      continue;
+    }
+
     // Put Transaction Reference in merchant as requested by user
     if (!merchantRaw || merchantRaw.toLowerCase() === "unknown") {
       merchantRaw = refVal || descRaw.split("  ")[0].slice(0, 80) || "Unknown";
@@ -394,8 +432,8 @@ async function mapRowsToTransactions(
 
 /**
  * POST /api/transactions/import
- * Accepts a CSV file, parses it, deduplicates, sends to AI for categorization,
- * saves transactions, and returns the results with AI category suggestions.
+ * Accepts a CSV, Excel, or PDF bank statement, extracts transaction rows (filtering non-transaction
+ * summaries/headers), deduplicates, sends to AI for categorization, and saves transactions.
  */
 router.post(
   "/import",
@@ -403,21 +441,64 @@ router.post(
   async (req: AuthRequest, res: any, next: any) => {
     try {
       if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded. Attach a CSV as 'file'." });
+        return res.status(400).json({ error: "No file uploaded. Attach a CSV, Excel, or PDF statement as 'file'." });
       }
 
+      const isPdfOrExcel =
+        /\.(pdf|xlsx?|xls)$/i.test(req.file.originalname) ||
+        req.file.mimetype === "application/pdf" ||
+        req.file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
       let parsed: { headers: string[]; rows: Record<string, string>[] };
-      try {
-        parsed = parseCsv(req.file.buffer);
-      } catch (parseErr: any) {
-        return res.status(400).json({ error: `CSV parse error: ${parseErr.message}` });
+      let statementMetadata: Record<string, any> | null = null;
+      let parseNotes: string[] = [];
+
+      if (isPdfOrExcel) {
+        try {
+          const parseResult = await callAi(
+            "/internal/ai/parse-statement",
+            req.auth!.userId,
+            req.auth!.email,
+            {
+              file_name: req.file.originalname,
+              file_base64: req.file.buffer.toString("base64"),
+            }
+          );
+          const rawRows: Record<string, any>[] = Array.isArray(parseResult?.rows) ? parseResult.rows : [];
+          const headerSet = new Set<string>();
+          for (const row of rawRows) {
+            for (const key of Object.keys(row)) {
+              if (!key.startsWith("_")) headerSet.add(key);
+            }
+          }
+          const headers = Array.from(headerSet);
+          const normalizedRows: Record<string, string>[] = rawRows.map((row) => {
+            const out: Record<string, string> = {};
+            for (const h of headers) {
+              out[h] = row[h] == null ? "" : String(row[h]);
+            }
+            return out;
+          });
+          parsed = { headers, rows: normalizedRows };
+          statementMetadata = parseResult?.metadata || null;
+          parseNotes = Array.isArray(parseResult?.notes) ? parseResult.notes : [];
+        } catch (parseErr: any) {
+          const detail = parseErr?.response?.data?.detail || parseErr.message;
+          return res.status(400).json({ error: `Statement parse error: ${detail}` });
+        }
+      } else {
+        try {
+          parsed = parseCsv(req.file.buffer);
+        } catch (parseErr: any) {
+          return res.status(400).json({ error: `CSV parse error: ${parseErr.message}` });
+        }
       }
 
       if (parsed.rows.length === 0) {
-        return res.status(400).json({ error: "CSV has no transaction data rows." });
+        return res.status(400).json({ error: "Statement has no transaction data rows." });
       }
       if (parsed.rows.length > 5000) {
-        return res.status(400).json({ error: "CSV exceeds 5,000 transaction limit per upload." });
+        return res.status(400).json({ error: "Statement exceeds 5,000 transaction limit per upload." });
       }
 
       let valid: any[], skipped: number, duplicates: number;
@@ -437,7 +518,9 @@ router.post(
           skipped,
           duplicates,
           categorization_suggestions: [],
-          message: "No new transactions found. All rows were either invalid, zero amount, or already imported.",
+          statement_metadata: statementMetadata,
+          notes: parseNotes,
+          message: "No new transactions found. All rows were either invalid, summary lines, or already imported.",
         });
       }
 
@@ -542,6 +625,8 @@ router.post(
         ai_error: aiError,
         transactions: savedDocs,
         categorization_suggestions: categorizationResults,
+        statement_metadata: statementMetadata,
+        notes: parseNotes,
         message: `Imported ${savedDocs.length} transactions. ${categorizationResults.length} categorized by AI.`,
       });
     } catch (e) {
